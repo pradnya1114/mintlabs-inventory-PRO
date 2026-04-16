@@ -22,6 +22,7 @@ service cloud.firestore {
     //   - box: string (optional)
     //   - remark: string (optional)
     //   - working: string (optional)
+    //   - eles: string (optional)
     //   - updatedAt: string (optional, ISO 8601) - Last update timestamp
     //   - updatedBy: string (optional, uid) - User who last updated the item
     //
@@ -64,7 +65,7 @@ service cloud.firestore {
     // ===============================================================
     function isValidInventoryItem(data) {
       return hasRequiredFields(['id', 'name', 'quantity', 'cupboard', 'category']) &&
-             hasOnlyAllowedFields(['id', 'name', 'quantity', 'cupboard', 'category', 'serialNumber', 'modelNumber', 'imei', 'adapter', 'cable', 'sim', 'box', 'remark', 'working', 'updatedAt', 'updatedBy']) &&
+             hasOnlyAllowedFields(['id', 'name', 'quantity', 'cupboard', 'category', 'serialNumber', 'modelNumber', 'imei', 'adapter', 'cable', 'sim', 'box', 'remark', 'working', 'eles', 'updatedAt', 'updatedBy']) &&
              data.id is string && data.id.size() > 0 && data.id.size() <= 200 &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 500 &&
              data.quantity is number && data.quantity >= 0 &&
@@ -79,6 +80,7 @@ service cloud.firestore {
              (!('box' in data) || (data.box is string && data.box.size() <= 200)) &&
              (!('remark' in data) || (data.remark is string && data.remark.size() <= 2000)) &&
              (!('working' in data) || (data.working is string && data.working.size() <= 200)) &&
+             (!('eles' in data) || (data.eles is string && data.eles.size() <= 200)) &&
              (!('updatedAt' in data) || isValidDateString(data.updatedAt)) &&
              (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy == request.auth.uid));
     }

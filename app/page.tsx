@@ -30,7 +30,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { read, utils } from 'xlsx';
 import { InventoryItem, InventoryRequest, InventoryData, CUPBOARDS, CATEGORIES, generateId } from '@/lib/inventory';
-import { auth, db, isFirebaseConfigured } from '@/firebase';
+import { auth, db, storage, isFirebaseConfigured } from '@/firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -53,6 +53,7 @@ import {
   writeBatch,
   updateDoc
 } from 'firebase/firestore';
+import { ref, uploadString, listAll, getDownloadURL, deleteObject } from 'firebase/storage';
 
 // Error Handling Enums and Interfaces
 enum OperationType {
@@ -159,13 +160,18 @@ export default function InventoryPageWrapper() {
   );
 }
 
+interface ExportFile {
+  name: string;
+  url: string;
+}
+
 function InventoryPage() {
   const [data, setData] = useState<InventoryData>({ items: [], requests: [], lastAction: 'Initializing...' });
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [status, setStatus] = useState('System Ready');
-  const [exports, setExports] = useState<string[]>([]);
+  const [exports, setExports] = useState<ExportFile[]>([]);
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
   
   // Sorting States
@@ -280,14 +286,23 @@ function InventoryPage() {
   }, [isAuthReady, user]);
 
   const fetchExports = useCallback(async () => {
+    if (!isFirebaseConfigured || !storage || !isAdmin) return;
     try {
-      const res = await fetch('/api/export-csv/list');
-      const data = await res.json();
-      setExports(data.exports || []);
-    } catch (err) {
+      const exportsRef = ref(storage, 'exports');
+      const res = await listAll(exportsRef);
+      const filePromises = res.items.map(async (item) => {
+        const url = await getDownloadURL(item);
+        return { name: item.name, url };
+      });
+      const files = await Promise.all(filePromises);
+      setExports(files.sort((a, b) => b.name.localeCompare(a.name)));
+    } catch (err: any) {
       console.error('Failed to fetch exports:', err);
+      if (err?.code === 'storage/retry-limit-exceeded') {
+        setStatus('Storage Error: Connection timed out. Please ensure Firebase Storage is enabled in your Firebase Console.');
+      }
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -442,6 +457,10 @@ function InventoryPage() {
   }, [data.items, updateLastAction]);
 
   const exportToCSV = useCallback(async () => {
+    if (!isFirebaseConfigured || !storage) {
+      setStatus('Firebase not configured');
+      return;
+    }
     const headers = ['ID', 'Name', 'Quantity', 'Cupboard', 'Category', 'Serial Number', 'Model Number', 'IMEI', 'Adapter', 'Cable', 'Sim', 'Box', 'Remark', 'Working', 'Eles'];
     const rows = data.items.map(i => [
       i.id, 
@@ -474,25 +493,25 @@ function InventoryPage() {
     link.click();
     document.body.removeChild(link);
 
-    // Save to server folder
+    // Save to Firebase Storage
     try {
-      const response = await fetch('/api/export-csv', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csvContent, fileName })
+      const storageRef = ref(storage, `exports/${fileName}`);
+      await uploadString(storageRef, csvContent, 'raw', {
+        contentType: 'text/csv'
       });
-      const result = await response.json();
-      if (result.success) {
-        setStatus(`Inventory exported and saved to server: ${fileName}`);
-        fetchExports();
+      
+      setStatus(`Inventory exported and saved to storage: ${fileName}`);
+      await updateLastAction(`Exported inventory to ${fileName}`);
+      fetchExports();
+    } catch (error: any) {
+      console.error('Storage export failed:', error);
+      if (error?.code === 'storage/retry-limit-exceeded') {
+        setStatus('Export failed: Storage connection timed out. Please ensure Firebase Storage is enabled in your Firebase Console.');
       } else {
-        setStatus('Exported to browser, but failed to save on server');
+        setStatus('Export failed');
       }
-    } catch (error) {
-      console.error('Server export failed:', error);
-      setStatus('Exported to browser, but server save failed');
     }
-  }, [data.items, fetchExports]);
+  }, [data.items, fetchExports, updateLastAction]);
 
   const handleRequest = useCallback(async () => {
     if (!user || !requestModal) return;
@@ -678,6 +697,19 @@ function InventoryPage() {
     e.target.value = '';
   }, [user]);
 
+  const handleRemoveExport = useCallback(async (fileName: string) => {
+    if (!isFirebaseConfigured || !storage || !isAdmin) return;
+    try {
+      const storageRef = ref(storage, `exports/${fileName}`);
+      await deleteObject(storageRef);
+      setStatus(`Export deleted: ${fileName}`);
+      fetchExports();
+    } catch (error) {
+      console.error('Failed to delete export:', error);
+      setStatus('Delete failed');
+    }
+  }, [isAdmin, fetchExports]);
+
   const handleConfirmImport = useCallback(async () => {
     if (!importPreview || !isAdmin || !isFirebaseConfigured || !db) return;
     setIsImporting(true);
@@ -794,6 +826,30 @@ function InventoryPage() {
         <div className="flex flex-col items-center gap-4">
           <RefreshCcw className="w-8 h-8 text-blue-600 animate-spin" />
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Initializing System...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isFirebaseConfigured) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center p-4 font-sans">
+        <div className="bg-white border border-red-100 p-10 w-full max-w-md shadow-2xl rounded-2xl text-center">
+          <div className="w-16 h-16 bg-red-100 text-red-600 rounded-2xl flex items-center justify-center mb-6 mx-auto">
+            <AlertCircle className="w-8 h-8" />
+          </div>
+          <h1 className="text-xl font-bold text-gray-900 mb-2">Configuration Required</h1>
+          <p className="text-sm text-gray-500 mb-8">
+            Firebase environment variables are missing. Please add your Firebase configuration to Vercel&apos;s environment variables to enable data persistence.
+          </p>
+          <div className="bg-gray-50 p-4 rounded-xl text-left border border-gray-100">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Required Variables:</p>
+            <code className="text-[10px] text-gray-600 block space-y-1">
+              NEXT_PUBLIC_FIREBASE_API_KEY<br />
+              NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN<br />
+              NEXT_PUBLIC_FIREBASE_PROJECT_ID
+            </code>
+          </div>
         </div>
       </div>
     );
@@ -1197,18 +1253,29 @@ function InventoryPage() {
                   </div>
                   <div className="space-y-2 max-h-48 overflow-y-auto no-scrollbar">
                     {exports.map((file) => (
-                      <div key={file} className="flex items-center justify-between p-2.5 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all group">
+                      <div key={file.name} className="flex items-center justify-between p-2.5 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all group">
                         <div className="flex items-center gap-2 overflow-hidden">
                           <FileText className="w-3 h-3 text-blue-500 flex-shrink-0" />
-                          <span className="text-[10px] text-gray-600 font-medium truncate">{file}</span>
+                          <span className="text-[10px] text-gray-600 font-medium truncate">{file.name}</span>
                         </div>
-                        <a 
-                          href={`/api/export-csv/download?file=${file}`}
-                          className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all active:scale-90"
-                          title="Download from server"
-                        >
-                          <Download className="w-3 h-3" />
-                        </a>
+                        <div className="flex items-center gap-1">
+                          <a 
+                            href={file.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all active:scale-90"
+                            title="Download from storage"
+                          >
+                            <Download className="w-3 h-3" />
+                          </a>
+                          <button
+                            onClick={() => handleRemoveExport(file.name)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all active:scale-90"
+                            title="Delete export"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
