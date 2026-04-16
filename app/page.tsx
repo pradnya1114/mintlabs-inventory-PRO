@@ -30,13 +30,14 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { read, utils } from 'xlsx';
 import { InventoryItem, InventoryRequest, InventoryData, CUPBOARDS, CATEGORIES, generateId } from '@/lib/inventory';
-import { auth, db } from '@/firebase';
+import { auth, db, isFirebaseConfigured } from '@/firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
   GoogleAuthProvider, 
   signOut,
-  User as FirebaseUser
+  User as FirebaseUser,
+  UserInfo
 } from 'firebase/auth';
 import { 
   collection, 
@@ -91,7 +92,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
       tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
+      providerInfo: auth.currentUser?.providerData.map((provider: UserInfo) => ({
         providerId: provider.providerId,
         displayName: provider.displayName,
         email: provider.email,
@@ -204,6 +205,11 @@ function InventoryPage() {
 
   // Auth Listener
   useEffect(() => {
+    if (!isFirebaseConfigured || !auth) {
+      setIsAuthReady(true);
+      setStatus('Firebase not configured');
+      return;
+    }
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setIsAuthReady(true);
@@ -220,6 +226,7 @@ function InventoryPage() {
 
   // Firestore Connection Test
   useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
     async function testConnection() {
       try {
         await getDocFromServer(doc(db, 'test', 'connection'));
@@ -235,7 +242,7 @@ function InventoryPage() {
 
   // Firestore Listeners
   useEffect(() => {
-    if (!isAuthReady || !user) return;
+    if (!isAuthReady || !user || !isFirebaseConfigured || !db) return;
 
     const inventoryPath = 'inventory';
     const metadataPath = 'metadata';
@@ -291,6 +298,10 @@ function InventoryPage() {
   }, [isAdmin, fetchExports]);
 
   const handleLogin = useCallback(async () => {
+    if (!isFirebaseConfigured || !auth) {
+      setStatus('Firebase not configured');
+      return;
+    }
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
@@ -301,6 +312,7 @@ function InventoryPage() {
   }, []);
 
   const handleLogout = useCallback(async () => {
+    if (!isFirebaseConfigured || !auth) return;
     try {
       await signOut(auth);
     } catch (error) {
@@ -323,6 +335,10 @@ function InventoryPage() {
   const handleAddItem = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItem.name || newItem.quantity < 1) return;
+    if (!isFirebaseConfigured || !db) {
+      setStatus('Firebase not configured');
+      return;
+    }
 
     const id = generateId(newItem.cupboard, data.items);
     const item: InventoryItem = { 
@@ -389,7 +405,7 @@ function InventoryPage() {
   }, []);
 
   const handleEditSave = useCallback(async () => {
-    if (!editForm) return;
+    if (!editForm || !isFirebaseConfigured || !db) return;
     const path = `inventory/${editForm.id}`;
     try {
       const updatedItem = {
@@ -597,20 +613,34 @@ function InventoryPage() {
 
           const parsedItems: InventoryItem[] = data.map((row, index) => {
             // Mapping based on the provided image columns
-            const name = row['Inventory Description'] || row.name || row.Name || row.item || row.Item || row.Description || row.description || 'Unnamed Item';
+            const name = (row['Inventory Description'] || row.name || row.Name || row.item || row.Item || row.Description || row.description || 'Unnamed Item').toString().trim();
             const quantityStr = String(row.Qy || row.quantity || row.Quantity || row.qty || row.Qty || row.Count || row.count || '0');
             const quantity = parseInt(quantityStr.replace(/[^0-9]/g, '')) || 0;
             const cupboard = String(row.Drawer || row.cupboard || row.Cupboard || row.Location || row.location || '1').trim();
-            const id = row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `IMP-${wsname}-${Date.now()}-${index}`;
+            const serialNumber = String(row['Serial No'] || row['Serial No.'] || row.serialNumber || row.SerialNumber || row['Serial Number'] || row.SN || row.sn || '').trim();
+            const modelNumber = String(row['Model/Make'] || row['Model'] || row.modelNumber || row.ModelNumber || row['Model Number'] || row.MN || row.mn || '').trim();
+            
+            // Normalize category
+            let category = wsname === 'Master' ? (row.Category || row.category || row.CATEGORY || 'Master') : wsname.trim();
+            const catLower = category.toLowerCase().trim();
+            if (catLower === 'mouse' || catLower === 'keyboard & mouse') category = 'Keyboard & Mouse';
+            else if (catLower === 'cable' || catLower === 'cables') category = 'Cables';
+            else if (catLower === 'eles' || catLower === 'electronics') category = 'Electronics';
+            else category = category.trim();
+
+            // Generate a stable ID if none provided to prevent duplicates across sheets
+            // We use a combination of name, serial, and model to create a unique but stable identifier
+            const contentHash = `${name}-${serialNumber}-${modelNumber}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const id = (row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `AUTO-${contentHash}`).toString().trim();
             
             return {
-              id: id.toString().trim(),
-              name: name.toString().trim(),
+              id,
+              name,
               quantity,
               cupboard,
-              category: wsname === 'Master' ? (row.Category || row.category || row.CATEGORY || 'Master') : wsname.trim(),
-              serialNumber: String(row['Serial No'] || row['Serial No.'] || row.serialNumber || row.SerialNumber || row['Serial Number'] || row.SN || row.sn || '').trim(),
-              modelNumber: String(row['Model/Make'] || row['Model'] || row.modelNumber || row.ModelNumber || row['Model Number'] || row.MN || row.mn || '').trim(),
+              category,
+              serialNumber,
+              modelNumber,
               imei: String(row.IMEI || row.imei || row.Imei || '').trim(),
               adapter: String(row.Adapter || row.Adaptor || row.Adpator || row.adapter || row.adaptor || row.ADP || row.adp || '').trim(),
               cable: String(row.Cable || row.cable || row.CBL || row.cbl || '').trim(),
@@ -627,11 +657,14 @@ function InventoryPage() {
           allParsedItems = [...allParsedItems, ...parsedItems];
         });
 
-        // If "Master" sheet exists and has data, and user said "master should contain all data",
-        // we might want to filter out duplicates if we imported from other sheets too.
-        // For now, let's just take all data from all sheets as they seem to be categorized.
-        // If "Master" is indeed a duplicate of all others, we can filter by ID.
-        const uniqueItems = Array.from(new Map(allParsedItems.map(item => [item.id, item])).values());
+        // Deduplicate across all sheets by ID
+        // If multiple sheets have the same item (same ID or same AUTO-ID), we keep the last one found
+        const uniqueItemsMap = new Map<string, InventoryItem>();
+        allParsedItems.forEach(item => {
+          uniqueItemsMap.set(item.id, item);
+        });
+        
+        const uniqueItems = Array.from(uniqueItemsMap.values());
 
         setImportPreview(uniqueItems);
         setStatus(`Parsed ${uniqueItems.length} unique items from ${wb.SheetNames.length} sheets`);
@@ -646,19 +679,33 @@ function InventoryPage() {
   }, [user]);
 
   const handleConfirmImport = useCallback(async () => {
-    if (!importPreview || !isAdmin) return;
+    if (!importPreview || !isAdmin || !isFirebaseConfigured || !db) return;
     setIsImporting(true);
-    setStatus('Importing items...');
+    const totalItems = importPreview.length;
+    setStatus(`Importing ${totalItems} items...`);
 
     try {
-      const batch = writeBatch(db);
-      for (const item of importPreview) {
-        const itemRef = doc(db, 'inventory', item.id);
-        batch.set(itemRef, item);
+      // Firestore batch limit is 500 operations
+      const BATCH_SIZE = 500;
+      const chunks = [];
+      for (let i = 0; i < importPreview.length; i += BATCH_SIZE) {
+        chunks.push(importPreview.slice(i, i + BATCH_SIZE));
       }
-      await batch.commit();
-      await updateLastAction(`Imported ${importPreview.length} items from Excel`);
-      setStatus(`Successfully imported ${importPreview.length} items`);
+
+      let processed = 0;
+      for (const chunk of chunks) {
+        const batch = writeBatch(db);
+        chunk.forEach(item => {
+          const itemRef = doc(db, 'inventory', item.id);
+          batch.set(itemRef, item);
+        });
+        await batch.commit();
+        processed += chunk.length;
+        setStatus(`Importing... ${Math.round((processed / totalItems) * 100)}%`);
+      }
+
+      await updateLastAction(`Imported ${totalItems} items from Excel`);
+      setStatus(`Successfully imported ${totalItems} items`);
       setImportPreview(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'inventory/batch');
@@ -685,13 +732,22 @@ function InventoryPage() {
   }, [isAdmin, updateLastAction]);
 
   const filteredItems = useMemo(() => {
-    return data.items.filter(item => {
+    const items = data.items.filter(item => {
       const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            item.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            item.serialNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            item.modelNumber?.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesCategory = selectedCategory === 'Master' || item.category.trim().toLowerCase() === selectedCategory.trim().toLowerCase();
       return matchesSearch && matchesCategory;
+    });
+
+    // Deduplicate by content hash to prevent showing the same item multiple times
+    const seen = new Set<string>();
+    return items.filter(item => {
+      const hash = `${item.name}-${item.serialNumber || ''}-${item.modelNumber || ''}`.toLowerCase().trim();
+      if (seen.has(hash)) return false;
+      seen.add(hash);
+      return true;
     });
   }, [data.items, searchQuery, selectedCategory]);
 
@@ -710,14 +766,23 @@ function InventoryPage() {
   }, [filteredItems, sortBy, sortOrder]);
 
   const stats = useMemo(() => {
-    const totalItems = data.items.length;
-    const totalQuantity = data.items.reduce((acc, item) => acc + item.quantity, 0);
+    // Deduplicate items for accurate stats
+    const seen = new Set<string>();
+    const uniqueItems = data.items.filter(item => {
+      const hash = `${item.name}-${item.serialNumber || ''}-${item.modelNumber || ''}`.toLowerCase().trim();
+      if (seen.has(hash)) return false;
+      seen.add(hash);
+      return true;
+    });
+
+    const totalItems = uniqueItems.length;
+    const totalQuantity = uniqueItems.reduce((acc, item) => acc + item.quantity, 0);
     const perCupboard = CUPBOARDS.reduce((acc, c) => {
-      acc[c] = data.items.filter(i => i.cupboard === c).length;
+      acc[c] = uniqueItems.filter(i => i.cupboard === c).length;
       return acc;
     }, {} as Record<string, number>);
     const perCategory = CATEGORIES.reduce((acc, cat) => {
-      acc[cat] = data.items.filter(i => i.category.trim().toLowerCase() === cat.trim().toLowerCase()).length;
+      acc[cat] = uniqueItems.filter(i => i.category.trim().toLowerCase() === cat.trim().toLowerCase()).length;
       return acc;
     }, {} as Record<string, number>);
     return { totalItems, totalQuantity, perCupboard, perCategory };
