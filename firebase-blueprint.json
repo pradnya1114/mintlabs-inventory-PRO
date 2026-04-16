@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "A single item in the inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID for the item" },
+        "name": { "type": "string", "description": "Name of the item" },
+        "quantity": { "type": "number", "description": "Quantity in stock" },
+        "cupboard": { "type": "string", "description": "Cupboard/Location identifier" },
+        "category": { "type": "string", "description": "Item category (e.g. Phones, TV, Laptops, holotube, wifi router)" },
+        "serialNumber": { "type": "string", "description": "Serial number" },
+        "modelNumber": { "type": "string", "description": "Model number" },
+        "imei": { "type": "string", "description": "IMEI number" },
+        "adapter": { "type": "string", "description": "Adapter type/status" },
+        "cable": { "type": "string", "description": "Cable type/status" },
+        "sim": { "type": "string", "description": "SIM card status" },
+        "box": { "type": "string", "description": "Box status" },
+        "remark": { "type": "string", "description": "Additional remarks" },
+        "working": { "type": "string", "description": "Working status" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" },
+        "updatedBy": { "type": "string", "description": "User who last updated the item" }
+      },
+      "required": ["id", "name", "quantity", "cupboard", "category"]
+    },
+    "AppMetadata": {
+      "title": "App Metadata",
+      "description": "Metadata for the application",
+      "type": "object",
+      "properties": {
+        "lastAction": { "type": "string", "description": "The last action performed in the app" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      }
+    },
+    "InventoryRequest": {
+      "title": "Inventory Request",
+      "description": "A request to take, return, or request a new item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID for the request" },
+        "itemId": { "type": "string", "description": "ID of the item (optional for new requests)" },
+        "itemName": { "type": "string", "description": "Name of the item" },
+        "userId": { "type": "string", "description": "ID of the user" },
+        "userName": { "type": "string", "description": "Name of the user" },
+        "userEmail": { "type": "string", "description": "Email of the user" },
+        "type": { "type": "string", "enum": ["take", "return", "request"], "description": "Type of request" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "completed"], "description": "Status of request" },
+        "quantity": { "type": "number", "description": "Quantity requested" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" },
+        "note": { "type": "string", "description": "Optional note" }
+      },
+      "required": ["id", "itemName", "userId", "userName", "userEmail", "type", "status", "quantity", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/inventory/{itemId}": {
+      "schema": "InventoryItem",
+      "description": "Collection of inventory items"
+    },
+    "/requests/{requestId}": {
+      "schema": "InventoryRequest",
+      "description": "Collection of inventory requests"
+    },
+    "/metadata/app": {
+      "schema": "AppMetadata",
+      "description": "Application metadata"
+    }
+  }
+}

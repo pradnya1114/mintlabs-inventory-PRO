@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: inventory
+    // Document ID: itemId
+    // Fields:
+    //   - id: string (required) - Unique ID for the item
+    //   - name: string (required, size 1-200) - Name of the item
+    //   - quantity: number (required, >= 0) - Quantity in stock
+    //   - cupboard: string (required, size >= 1) - Cupboard/Location identifier
+    //   - category: string (required, size 1-100) - Item category
+    //   - serialNumber: string (optional)
+    //   - modelNumber: string (optional)
+    //   - imei: string (optional)
+    //   - adapter: string (optional)
+    //   - cable: string (optional)
+    //   - sim: string (optional)
+    //   - box: string (optional)
+    //   - remark: string (optional)
+    //   - working: string (optional)
+    //   - updatedAt: string (optional, ISO 8601) - Last update timestamp
+    //   - updatedBy: string (optional, uid) - User who last updated the item
+    //
+    // Collection: metadata
+    // Document ID: app
+    // Fields:
+    //   - lastAction: string (required, size 1-200) - The last action performed in the app
+    //   - updatedAt: string (required, ISO 8601) - Last update timestamp
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ( (request.auth.token.email == "pradnya@mintlabs.in" && request.auth.token.email_verified == true) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') );
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidInventoryItem(data) {
+      return hasRequiredFields(['id', 'name', 'quantity', 'cupboard', 'category']) &&
+             hasOnlyAllowedFields(['id', 'name', 'quantity', 'cupboard', 'category', 'serialNumber', 'modelNumber', 'imei', 'adapter', 'cable', 'sim', 'box', 'remark', 'working', 'updatedAt', 'updatedBy']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 200 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 500 &&
+             data.quantity is number && data.quantity >= 0 &&
+             data.cupboard is string && data.cupboard.size() >= 1 && data.cupboard.size() <= 100 &&
+             data.category is string && data.category.size() > 0 && data.category.size() <= 100 &&
+             (!('serialNumber' in data) || (data.serialNumber is string && data.serialNumber.size() <= 200)) &&
+             (!('modelNumber' in data) || (data.modelNumber is string && data.modelNumber.size() <= 200)) &&
+             (!('imei' in data) || (data.imei is string && data.imei.size() <= 200)) &&
+             (!('adapter' in data) || (data.adapter is string && data.adapter.size() <= 200)) &&
+             (!('cable' in data) || (data.cable is string && data.cable.size() <= 200)) &&
+             (!('sim' in data) || (data.sim is string && data.sim.size() <= 200)) &&
+             (!('box' in data) || (data.box is string && data.box.size() <= 200)) &&
+             (!('remark' in data) || (data.remark is string && data.remark.size() <= 2000)) &&
+             (!('working' in data) || (data.working is string && data.working.size() <= 200)) &&
+             (!('updatedAt' in data) || isValidDateString(data.updatedAt)) &&
+             (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy == request.auth.uid));
+    }
+
+    function isValidMetadata(data) {
+      return hasRequiredFields(['lastAction', 'updatedAt']) &&
+             hasOnlyAllowedFields(['lastAction', 'updatedAt']) &&
+             data.lastAction is string && data.lastAction.size() > 0 && data.lastAction.size() <= 1000 &&
+             isValidDateString(data.updatedAt);
+    }
+
+    function isValidRequest(data) {
+      return hasRequiredFields(['id', 'itemName', 'userId', 'userName', 'userEmail', 'type', 'status', 'quantity', 'createdAt', 'updatedAt']) &&
+             hasOnlyAllowedFields(['id', 'itemId', 'itemName', 'userId', 'userName', 'userEmail', 'type', 'status', 'quantity', 'createdAt', 'updatedAt', 'note']) &&
+             data.id is string && data.id.size() > 0 &&
+             (!('itemId' in data) || (data.itemId is string && data.itemId.size() > 0)) &&
+             data.itemName is string && data.itemName.size() > 0 &&
+             data.userId is string && (resource == null ? data.userId == request.auth.uid : data.userId == resource.data.userId) &&
+             data.type in ['take', 'return', 'request'] &&
+             data.status in ['pending', 'approved', 'rejected', 'completed'] &&
+             data.quantity is number && data.quantity > 0 &&
+             isValidDateString(data.createdAt) &&
+             isValidDateString(data.updatedAt) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 500));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create, update: if isAuthenticated() && (request.auth.uid == userId || isAdmin()) && 
+                             (!('role' in request.resource.data) || request.resource.data.role == 'user' || isAdmin());
+    }
+
+    match /inventory/{itemId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (isValidInventoryItem(request.resource.data) || isAdmin());
+      allow update: if isAuthenticated() && (isValidInventoryItem(request.resource.data) || isAdmin());
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
+    match /requests/{requestId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create: if isAuthenticated() && isValidRequest(request.resource.data);
+      allow update: if isAuthenticated() && (isAdmin() || (request.auth.uid == resource.data.userId && resource.data.status == 'pending' && isValidRequest(request.resource.data)));
+      allow delete: if isAdmin();
+    }
+
+    match /metadata/app {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isValidMetadata(request.resource.data);
+    }
+
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
