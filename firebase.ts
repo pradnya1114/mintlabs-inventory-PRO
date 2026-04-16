@@ -45,5 +45,7 @@ export const storage = firebaseConfig.apiKey
   ? getStorage(app)
   : null as any;
 
+export const storageBucketName = firebaseConfig.storageBucket;
+
 // Helper to check if Firebase is properly configured
 export const isFirebaseConfigured = !!firebaseConfig.apiKey;

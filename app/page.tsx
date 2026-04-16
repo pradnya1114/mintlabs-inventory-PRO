@@ -30,7 +30,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { read, utils } from 'xlsx';
 import { InventoryItem, InventoryRequest, InventoryData, CUPBOARDS, CATEGORIES, generateId } from '@/lib/inventory';
-import { auth, db, storage, isFirebaseConfigured } from '@/firebase';
+import { auth, db, storage, isFirebaseConfigured, storageBucketName } from '@/firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -299,7 +299,7 @@ function InventoryPage() {
     } catch (err: any) {
       console.error('Failed to fetch exports:', err);
       if (err?.code === 'storage/retry-limit-exceeded') {
-        setStatus('Storage Error: Connection timed out. Please ensure Firebase Storage is enabled in your Firebase Console.');
+        setStatus(`Storage Error: Connection timed out for bucket "${storageBucketName}". Please ensure Firebase Storage is enabled in your Firebase Console.`);
       }
     }
   }, [isAdmin]);
@@ -506,7 +506,7 @@ function InventoryPage() {
     } catch (error: any) {
       console.error('Storage export failed:', error);
       if (error?.code === 'storage/retry-limit-exceeded') {
-        setStatus('Export failed: Storage connection timed out. Please ensure Firebase Storage is enabled in your Firebase Console.');
+        setStatus(`Export failed: Storage connection timed out for bucket "${storageBucketName}". Please ensure Firebase Storage is enabled in your Firebase Console.`);
       } else {
         setStatus('Export failed');
       }
