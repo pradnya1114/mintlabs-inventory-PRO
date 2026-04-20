@@ -187,6 +187,7 @@ function InventoryPage() {
   const [requestModal, setRequestModal] = useState<{ item?: InventoryItem; type: 'take' | 'return' | 'request' } | null>(null);
   const [requestQuantity, setRequestQuantity] = useState(1);
   const [requestItemName, setRequestItemName] = useState('');
+  const [requestSearch, setRequestSearch] = useState('');
   const [requestNote, setRequestNote] = useState('');
   const [showRequests, setShowRequests] = useState(false);
 
@@ -594,6 +595,7 @@ function InventoryPage() {
       setRequestQuantity(1);
       setRequestNote('');
       setRequestItemName('');
+      setRequestSearch('');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `requests/${requestId}`);
     }
@@ -1923,29 +1925,96 @@ function InventoryPage() {
               </div>
               <h3 className="text-lg font-bold text-gray-900 mb-1 capitalize">{requestModal.type} Item</h3>
               {requestModal.item ? (
-                <div className="mb-6">
-                  <p className="text-xs text-gray-900 font-bold">{requestModal.item.name}</p>
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
-                      requestModal.item.quantity < 5 ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
-                    }`}>
-                      Available: {requestModal.item.quantity}
-                    </span>
-                    <span className="px-2 py-1 bg-gray-100 text-gray-600 text-[10px] font-bold uppercase rounded">
-                      Loc: {requestModal.item.cupboard.length <= 2 ? `C${requestModal.item.cupboard}` : requestModal.item.cupboard}
-                    </span>
+                <div className="mb-6 relative group">
+                  <div className="p-3 bg-blue-50/50 border border-blue-100 rounded-xl">
+                    <p className="text-xs text-gray-900 font-bold">{requestModal.item.name}</p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
+                        requestModal.item.quantity < 5 ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+                      }`}>
+                        Available: {requestModal.item.quantity}
+                      </span>
+                      <span className="px-2 py-1 bg-gray-100 text-gray-600 text-[10px] font-bold uppercase rounded">
+                        Loc: {requestModal.item.cupboard.length <= 2 ? `C${requestModal.item.cupboard}` : requestModal.item.cupboard}
+                      </span>
+                    </div>
                   </div>
+                  <button 
+                    onClick={() => {
+                      setRequestModal({...requestModal, item: undefined});
+                      setRequestItemName('');
+                    }}
+                    className="absolute -top-2 -right-2 w-6 h-6 bg-white border border-gray-100 shadow-sm rounded-full flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <XCircle className="w-4 h-4" />
+                  </button>
                 </div>
               ) : (
                 <div className="mb-6">
-                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1 tracking-wider">Item Name</label>
-                  <input 
-                    type="text"
-                    className="w-full border border-gray-100 rounded-xl p-3 text-sm font-bold focus:border-blue-500 outline-none bg-gray-50/50"
-                    placeholder="What do you need?"
-                    value={requestItemName}
-                    onChange={e => setRequestItemName(e.target.value)}
-                  />
+                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1 tracking-wider">Search Item or Type New</label>
+                  <div className="space-y-2">
+                    <input 
+                      type="text"
+                      className="w-full border border-gray-100 rounded-xl p-3 text-sm font-bold focus:border-blue-500 outline-none bg-gray-50/50"
+                      placeholder="Search existing items..."
+                      value={requestSearch}
+                      onChange={e => setRequestSearch(e.target.value)}
+                    />
+                    
+                    {requestSearch.length > 0 && (
+                      <div className="max-h-[160px] overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50 bg-white">
+                        {data.items
+                          .filter(it => 
+                            it.name.toLowerCase().includes(requestSearch.toLowerCase()) || 
+                            it.id.toLowerCase().includes(requestSearch.toLowerCase())
+                          )
+                          .slice(0, 10)
+                          .map(it => (
+                            <button
+                              key={it.id}
+                              onClick={() => {
+                                setRequestModal({ ...requestModal, item: it });
+                                setRequestSearch('');
+                                setRequestItemName(it.name);
+                              }}
+                              className="w-full text-left p-3 hover:bg-gray-50 transition-colors flex items-center justify-between group"
+                            >
+                              <div>
+                                <p className="text-xs font-bold text-gray-900 group-hover:text-blue-600 transition-colors">{it.name}</p>
+                                <p className="text-[10px] text-gray-400 font-mono">{it.id}</p>
+                              </div>
+                              <div className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded uppercase">
+                                {it.quantity}
+                              </div>
+                            </button>
+                          ))}
+                        {requestSearch.length > 2 && (
+                          <button
+                            onClick={() => {
+                              setRequestItemName(requestSearch);
+                              setRequestSearch('');
+                            }}
+                            className="w-full text-left p-3 hover:bg-purple-50 transition-colors flex items-center gap-2 border-t border-purple-100"
+                          >
+                            <Plus className="w-4 h-4 text-purple-600" />
+                            <span className="text-xs font-bold text-purple-700">Request special item: &quot;{requestSearch}&quot;</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    
+                    {!requestSearch && requestItemName && (
+                      <div className="p-3 bg-purple-50 border border-purple-100 rounded-xl flex items-center justify-between">
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-purple-400 leading-none mb-1">New Item Name</p>
+                          <p className="text-sm font-bold text-purple-900">{requestItemName}</p>
+                        </div>
+                        <button onClick={() => setRequestItemName('')}>
+                          <XCircle className="w-4 h-4 text-purple-300 hover:text-purple-500" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
               
@@ -1974,7 +2043,10 @@ function InventoryPage() {
 
               <div className="flex gap-3">
                 <button 
-                  onClick={() => setRequestModal(null)}
+                  onClick={() => {
+                    setRequestModal(null);
+                    setRequestSearch('');
+                  }}
                   className="flex-1 px-4 py-3 bg-gray-50 text-gray-600 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-gray-100 transition-all"
                 >
                   Cancel
