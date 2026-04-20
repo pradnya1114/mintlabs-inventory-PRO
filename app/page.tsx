@@ -681,33 +681,103 @@ function InventoryPage() {
           if (data.length === 0) return;
 
           const parsedItems: InventoryItem[] = data.map((row, index) => {
-            // Mapping based on the provided image columns
-            const name = (row['Inventory Description'] || row.name || row.Name || row.item || row.Item || row.Description || row.description || 'Unnamed Item').toString().trim();
-            const quantityStr = String(row.Qy || row.quantity || row.Quantity || row.qty || row.Qty || row.Count || row.count || '0');
-            const quantity = parseInt(quantityStr.replace(/[^0-9]/g, '')) || 0;
-            const cupboard = String(row.Drawer || row.cupboard || row.Cupboard || row.Location || row.location || '1').trim();
-            const serialNumber = String(row['Serial No'] || row['Serial No.'] || row.serialNumber || row.SerialNumber || row['Serial Number'] || row.SN || row.sn || '').trim();
-            const modelNumber = String(row['Model/Make'] || row['Model'] || row.modelNumber || row.ModelNumber || row['Model Number'] || row.MN || row.mn || '').trim();
+            // EXTREMELY AGGRESSIVE column mapping to catch all user variations
+            const name = (
+              row['Inventory Description'] || 
+              row['Inventory description'] || 
+              row['Description'] || 
+              row['description'] || 
+              row['Name'] || 
+              row['name'] || 
+              row['Item'] || 
+              row['item'] || 
+              row['Asset Name'] ||
+              'Unnamed Item'
+            ).toString().trim();
+
+            const quantityStr = String(
+              row['Qy'] || 
+              row['qty'] || 
+              row['Qty'] || 
+              row['Quantity'] || 
+              row['quantity'] || 
+              row['Count'] || 
+              row['count'] || 
+              '1'
+            );
+            const quantity = parseInt(quantityStr.replace(/[^0-9]/g, '')) || 1;
             
-            // Normalize category
-            let category = wsname === 'Master' ? (row.Category || row.category || row.CATEGORY || 'Master') : wsname.trim();
+            const cupboard = String(
+              row['Drawer'] || 
+              row['drawer'] || 
+              row['Cupboard'] || 
+              row['cupboard'] || 
+              row['Location'] || 
+              row['location'] || 
+              '1'
+            ).trim();
+
+            const serialNumber = String(
+              row['Serial No'] || 
+              row['Serial No.'] || 
+              row['Serial Number'] || 
+              row['serialNumber'] || 
+              row['SN'] || 
+              row['sn'] || 
+              ''
+            ).trim();
+
+            const modelNumber = String(
+              row['Model/Make'] || 
+              row['Model'] || 
+              row['modelNumber'] || 
+              row['Model Number'] || 
+              row['MN'] || 
+              ''
+            ).trim();
+            
+            // Normalize category and check against known categories (especially holotube)
+            let rawCat = wsname === 'Master' ? (row.Category || row.category || row.CATEGORY || 'Master') : wsname.trim();
+            let category = String(rawCat).trim();
             const catLower = category.toLowerCase().trim();
+            
+            // Standardize common categories
             if (catLower === 'mouse' || catLower === 'keyboard & mouse') category = 'Keyboard & Mouse';
             else if (catLower === 'cable' || catLower === 'cables') category = 'Cables';
             else if (catLower === 'eles' || catLower === 'electronics') category = 'Electronics';
-            else category = category.trim();
+            else if (catLower === 'holotube' || catLower === 'holo tube') category = 'holotube';
+            else if (catLower === 'wifi' || catLower === 'wifi router') category = 'wifi router';
+            else {
+              // Capitalize first letter for everything else to look nice
+              category = category.charAt(0).toUpperCase() + category.slice(1);
+            }
 
-            // Generate a stable ID if none provided to prevent duplicates across sheets
-            // We use a combination of name, serial, and model to create a unique but stable identifier
-            const contentHash = `${name}-${serialNumber}-${modelNumber}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-            // IMPORTANT: Sanitize ID to remove forbidden Firestore characters like "/"
-            let id = (row.Code || row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `AUTO-${contentHash}`)
-              .toString()
-              .trim()
-              .replace(/\//g, '_') // Replace forward slash with underscore
-              .replace(/\s+/g, '-'); // Replace spaces with dashes
-            
-            if (!id) id = `AUTO-${Date.now()}-${index}`;
+            // FIND THE UNIQUE ID (CRITICAL for "single to single" requirement)
+            // User mentions "INVETORY CODE", let's be exhaustive
+            let rawCode = 
+              row['Code'] || 
+              row['code'] || 
+              row['Inventory Code'] || 
+              row['Inventory code'] || 
+              row['INVETORY CODE'] || 
+              row['Inventory'] || 
+              row['inventory'] || 
+              row['Asset ID'] || 
+              row['Asset code'] || 
+              row['ID'] || 
+              row['id'];
+
+            // STABLE ID LOGIC: 
+            // If code exists, use it. 
+            // If not, use content-hash + sheet + index to GUARANTEE uniqueness and prevent merging.
+            let id: string;
+            if (rawCode) {
+              id = String(rawCode).trim().replace(/\//g, '_').replace(/\s+/g, '-');
+            } else {
+              const contentHash = `${name}-${serialNumber}-${modelNumber}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const sheetSuffix = wsname.replace(/[^a-z0-9]/gi, '').toLowerCase();
+              id = `AUTO-${sheetSuffix}-${contentHash}-${index}`; // Index ensures "single to single" even if content is identical
+            }
 
             return {
               id,
