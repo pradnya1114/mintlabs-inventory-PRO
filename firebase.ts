@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -41,11 +41,22 @@ export const auth = firebaseConfig.apiKey
   ? getAuth(app) 
   : null as any;
 
+// Set persistence to local to ensure session survives refreshes
+if (auth) {
+  setPersistence(auth, browserLocalPersistence).catch((err) => {
+    console.error('Auth persistence error:', err);
+  });
+}
+
 export const storage = firebaseConfig.apiKey
   ? getStorage(app)
   : null as any;
 
-export const storageBucketName = firebaseConfig.storageBucket;
+export const activeConfig = {
+  projectId: firebaseConfig.projectId,
+  storageBucket: firebaseConfig.storageBucket,
+  databaseId: firebaseConfig.firestoreDatabaseId || '(default)'
+};
 
 // Helper to check if Firebase is properly configured
 export const isFirebaseConfigured = !!firebaseConfig.apiKey;

@@ -30,7 +30,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { read, utils } from 'xlsx';
 import { InventoryItem, InventoryRequest, InventoryData, CUPBOARDS, CATEGORIES, generateId } from '@/lib/inventory';
-import { auth, db, storage, isFirebaseConfigured, storageBucketName } from '@/firebase';
+import { auth, db, storage, isFirebaseConfigured, activeConfig } from '@/firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -170,6 +170,7 @@ function InventoryPage() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isDataLoading, setIsDataLoading] = useState(true);
   const [status, setStatus] = useState('System Ready');
   const [exports, setExports] = useState<ExportFile[]>([]);
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
@@ -220,7 +221,7 @@ function InventoryPage() {
       setUser(u);
       setIsAuthReady(true);
       if (u) {
-        setIsAdmin(u.email === 'pradnya@mintlabs.in');
+        setIsAdmin(u.email?.toLowerCase() === 'pradnya@mintlabs.in');
         setStatus(`Logged in as ${u.displayName || u.email}`);
       } else {
         setIsAdmin(false);
@@ -255,10 +256,14 @@ function InventoryPage() {
     const requestsPath = 'requests';
 
     const unsubscribeInventory = onSnapshot(collection(db, inventoryPath), (snapshot) => {
+      console.log(`Inventory snapshot received: ${snapshot.size} items`);
       const items = snapshot.docs.map(doc => doc.data() as InventoryItem);
       setData(prev => ({ ...prev, items }));
+      setIsDataLoading(false);
       setStatus('Data Synchronized');
     }, (error) => {
+      console.error('Inventory snapshot error:', error);
+      setIsDataLoading(false);
       handleFirestoreError(error, OperationType.GET, inventoryPath);
     });
 
@@ -299,7 +304,10 @@ function InventoryPage() {
     } catch (err: any) {
       console.error('Failed to fetch exports:', err);
       if (err?.code === 'storage/retry-limit-exceeded') {
-        setStatus(`Storage Error: Connection timed out for bucket "${storageBucketName}". Please ensure Firebase Storage is enabled in your Firebase Console.`);
+        const fallbackBucket = activeConfig.projectId ? `${activeConfig.projectId}.appspot.com` : 'unknown';
+        setStatus(`Storage Error: Connection timed out for bucket "${activeConfig.storageBucket}". 
+          Possible fix: Ensure Storage is enabled at https://console.firebase.google.com/project/${activeConfig.projectId}/storage. 
+          If already enabled, try changing your storageBucket to "${fallbackBucket}" in your environment variables.`);
       }
     }
   }, [isAdmin]);
@@ -506,7 +514,10 @@ function InventoryPage() {
     } catch (error: any) {
       console.error('Storage export failed:', error);
       if (error?.code === 'storage/retry-limit-exceeded') {
-        setStatus(`Export failed: Storage connection timed out for bucket "${storageBucketName}". Please ensure Firebase Storage is enabled in your Firebase Console.`);
+        const fallbackBucket = activeConfig.projectId ? `${activeConfig.projectId}.appspot.com` : 'unknown';
+        setStatus(`Export failed: Storage connection timed out for bucket "${activeConfig.storageBucket}". 
+          Possible fix: Ensure Storage is enabled at https://console.firebase.google.com/project/${activeConfig.projectId}/storage. 
+          If already enabled, try changing your storageBucket to "${fallbackBucket}" in your environment variables.`);
       } else {
         setStatus('Export failed');
       }
@@ -885,6 +896,12 @@ function InventoryPage() {
               <LogIn className="w-5 h-5 text-blue-600" />
               Sign in with Google
             </button>
+
+            {typeof window !== 'undefined' && !window.location.hostname.includes('localhost') && (
+              <p className="text-[10px] text-gray-400 text-center leading-relaxed mt-4">
+                Note: If login fails, ensure <span className="text-gray-600 font-mono">{window.location.hostname}</span> is added to your Authorized Domains in Firebase Console.
+              </p>
+            )}
           </div>
 
           <div className="mt-8 flex items-center justify-center gap-2">
@@ -1451,8 +1468,30 @@ function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  <AnimatePresence mode="popLayout">
-                    {sortedItems.map((item) => (
+                  {isDataLoading ? (
+                    <tr>
+                      <td colSpan={6} className="py-20 text-center">
+                        <div className="flex flex-col items-center justify-center">
+                          <RefreshCcw className="w-8 h-8 text-blue-400 animate-spin mb-4" />
+                          <p className="text-sm font-medium text-gray-500 tracking-widest uppercase">Fetching Inventory Records...</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : sortedItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-20 text-center">
+                        <div className="flex flex-col items-center justify-center">
+                          <div className="w-12 h-12 bg-gray-50 text-gray-300 rounded-full flex items-center justify-center mb-4">
+                            <Box className="w-6 h-6" />
+                          </div>
+                          <p className="text-sm font-medium text-gray-500">No items found</p>
+                          <p className="text-[10px] text-gray-400 mt-1">Try adjusting your search or category filter</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    <AnimatePresence mode="popLayout">
+                      {sortedItems.map((item) => (
                       <motion.tr 
                         layout
                         initial={{ opacity: 0 }}
@@ -1682,17 +1721,9 @@ function InventoryPage() {
                       </motion.tr>
                     ))}
                   </AnimatePresence>
+                )}
                 </tbody>
               </table>
-              {filteredItems.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-20 text-center">
-                  <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4">
-                    <Search className="w-8 h-8 text-gray-200" />
-                  </div>
-                  <p className="text-sm font-bold text-gray-400 uppercase tracking-widest">No matching records found</p>
-                  <p className="text-xs text-gray-300 mt-1">Try adjusting your search or category filters</p>
-                </div>
-              )}
             </div>
           </section>
         )}
@@ -1709,6 +1740,14 @@ function InventoryPage() {
           <div className="h-3 w-px bg-gray-100"></div>
           <span className="flex items-center gap-2">
             <RefreshCcw className="w-3 h-3" />
+            Project: <span className="text-gray-600">{activeConfig.projectId}</span>
+          </span>
+          <div className="h-3 w-px bg-gray-100"></div>
+          <span className="flex items-center gap-2">
+            Database: <span className="text-gray-600">{activeConfig.databaseId}</span>
+          </span>
+          <div className="h-3 w-px bg-gray-100"></div>
+          <span className="flex items-center gap-2">
             Total Units: <span className="text-gray-900">{stats.totalQuantity}</span>
           </span>
         </div>
