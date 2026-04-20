@@ -860,14 +860,7 @@ function InventoryPage() {
       return matchesSearch && matchesCategory;
     });
 
-    // Deduplicate by content hash to prevent showing the same item multiple times
-    const seen = new Set<string>();
-    return items.filter(item => {
-      const hash = `${item.name}-${item.serialNumber || ''}-${item.modelNumber || ''}`.toLowerCase().trim();
-      if (seen.has(hash)) return false;
-      seen.add(hash);
-      return true;
-    });
+    return items;
   }, [data.items, searchQuery, selectedCategory]);
 
   const sortedItems = useMemo(() => {
@@ -885,36 +878,18 @@ function InventoryPage() {
   }, [filteredItems, sortBy, sortOrder]);
 
   const stats = useMemo(() => {
-    // Deduplicate items for accurate stats
-    const seen = new Set<string>();
-    const uniqueItems = data.items.filter(item => {
-      const hash = `${item.name}-${item.serialNumber || ''}-${item.modelNumber || ''}`.toLowerCase().trim();
-      if (seen.has(hash)) return false;
-      seen.add(hash);
-      return true;
-    });
-
-    const totalItems = uniqueItems.length;
-    const totalQuantity = uniqueItems.reduce((acc, item) => acc + item.quantity, 0);
+    const totalItems = data.items.length;
+    const totalQuantity = data.items.reduce((acc, item) => acc + item.quantity, 0);
     const perCupboard = CUPBOARDS.reduce((acc, c) => {
-      acc[c] = uniqueItems.filter(i => i.cupboard === c).length;
+      acc[c] = data.items.filter(i => i.cupboard === c).length;
       return acc;
     }, {} as Record<string, number>);
     const perCategory = CATEGORIES.reduce((acc, cat) => {
-      acc[cat] = uniqueItems.filter(i => i.category.trim().toLowerCase() === cat.trim().toLowerCase()).length;
+      acc[cat] = data.items.filter(i => i.category.trim().toLowerCase() === cat.trim().toLowerCase()).length;
       return acc;
     }, {} as Record<string, number>);
     return { totalItems, totalQuantity, perCupboard, perCategory };
   }, [data.items]);
-
-  const isSwapped = useMemo(() => {
-    if (!activeConfig.projectId || !activeConfig.databaseId) return false;
-    const p = activeConfig.projectId.toLowerCase().trim();
-    const d = activeConfig.databaseId.toLowerCase().trim();
-    // Swapped if Project ID contains "ai-studio" (which is usually for databases) 
-    // or if they are identical
-    return p === d || p.includes('ai-studio-');
-  }, []);
 
   if (!isAuthReady) {
     return (
@@ -982,10 +957,17 @@ function InventoryPage() {
               Sign in with Google
             </button>
 
-            {typeof window !== 'undefined' && !window.location.hostname.includes('localhost') && (
-              <p className="text-[10px] text-gray-400 text-center leading-relaxed mt-4">
-                Note: If login fails, ensure <span className="text-gray-600 font-mono">{window.location.hostname}</span> is added to your Authorized Domains in Firebase Console.
-              </p>
+            {status.includes('Failed') && (
+              <div className="bg-red-50 p-4 rounded-xl border border-red-100 flex gap-3">
+                <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold text-red-700 uppercase">Login Blocked?</p>
+                  <p className="text-[10px] text-red-600 leading-tight">
+                    Check <span className="font-bold">Authentication &gt; Settings &gt; Authorized Domains</span> in Firebase Console. 
+                    Ensure <code className="bg-red-100 px-1 rounded">{typeof window !== 'undefined' ? window.location.hostname : 'your-domain'}</code> is added.
+                  </p>
+                </div>
+              </div>
             )}
           </div>
 
@@ -1069,27 +1051,45 @@ function InventoryPage() {
       </header>
       
       {/* Critical Configuration Warning Banner */}
-      {(isSwapped || showConfigWarning) && (
-        <div className="bg-red-600 text-white p-3 px-8 flex items-center justify-between shadow-lg z-50">
-          <div className="flex items-center gap-4">
-            <AlertCircle className="w-5 h-5 flex-shrink-0 animate-bounce" />
-            <div className="text-xs font-bold uppercase tracking-wider">
-              {isSwapped ? (
-                <span>
-                  CRITICAL: Possible Swapped IDs. PROJECT ID should be &quot;{activeConfig.expectedProjectId}&quot; but is &quot;{activeConfig.projectId}&quot;. 
-                  Check Vercel env vars.
-                </span>
-              ) : (
-                <span>WAITING FOR DATABASE CONNECT: This can happen if the DATABASE ID is incorrect in Vercel.</span>
-              )}
+      {(activeConfig.isSwapped || showConfigWarning) && (
+        <div className="bg-red-600 text-white p-4 px-8 border-b-4 border-black/20 z-50 shadow-2xl">
+          <div className="max-w-[1600px] mx-auto flex items-start justify-between gap-6">
+            <div className="flex gap-4">
+              <AlertCircle className="w-8 h-8 flex-shrink-0 animate-pulse text-yellow-300" />
+              <div className="space-y-2">
+                <p className="text-sm font-black uppercase tracking-tighter leading-none italic">CRITICAL CONFIGURATION ERROR DETECTED</p>
+                <div className="text-[11px] font-bold leading-relaxed opacity-90 max-w-2xl">
+                  {activeConfig.isSwapped ? (
+                    <>
+                      Your Project ID and Database ID are swapped. This breaks Google Login. 
+                      Please update your <span className="underline italic">Vercel Environment Variables</span> immediately:
+                      <div className="mt-3 flex flex-col gap-2 font-mono text-[10px] bg-black/20 p-3 rounded-lg border border-white/10">
+                        <div className="flex justify-between">
+                          <span className="text-gray-300">NEXT_PUBLIC_FIREBASE_PROJECT_ID:</span>
+                          <span className="text-green-400 bg-black/30 px-2 rounded font-black select-all">{activeConfig.expectedProjectId}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-300">NEXT_PUBLIC_FIREBASE_FIRESTORE_DATABASE_ID:</span>
+                          <span className="text-blue-400 bg-black/30 px-2 rounded font-black select-all">{activeConfig.expectedDatabaseId}</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <span>
+                      SYSTEM TIMEOUT: The application cannot connect to your database. 
+                      Verify your <span className="underline">Database ID</span> in Vercel matches your Firebase Console exactly.
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
+            <button 
+              onClick={() => setShowConfigWarning(false)}
+              className="px-4 py-2 bg-white text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-100 transition-all flex-shrink-0"
+            >
+              Understand
+            </button>
           </div>
-          <button 
-            onClick={() => setShowConfigWarning(false)}
-            className="text-[10px] font-black uppercase tracking-widest bg-white/20 px-2 py-1 rounded hover:bg-white/30 transition-colors"
-          >
-            Dimiss
-          </button>
         </div>
       )}
 

@@ -13,14 +13,26 @@ try {
 
 // Firebase configuration using environment variables for Vercel/Production
 // Fallback to the local config file if environment variables are not set
+const rawProjectId = (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || localConfig.projectId || '').trim();
+const rawDatabaseId = (process.env.NEXT_PUBLIC_FIREBASE_FIRESTORE_DATABASE_ID || localConfig.firestoreDatabaseId || '').trim();
+
+// INTELLIGENT AUTO-RECOVERY: Detect if user swapped Project ID and Database ID
+// Real project IDs: "led10-2e780"
+// Database IDs: "ai-studio-8aadbe5a-8a6c-..."
+const isSwappedDetected = !!(rawProjectId && rawProjectId.startsWith('ai-studio-') && rawDatabaseId && !rawDatabaseId.startsWith('ai-studio-'));
+
+const projectId = isSwappedDetected ? (rawDatabaseId || localConfig.projectId) : rawProjectId;
+const databaseId = isSwappedDetected ? rawProjectId : rawDatabaseId;
+const authDomain = isSwappedDetected ? `${projectId}.firebaseapp.com` : (process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || localConfig.authDomain);
+
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || localConfig.apiKey,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || localConfig.authDomain,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || localConfig.projectId,
+  authDomain: authDomain,
+  projectId: projectId,
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || localConfig.storageBucket,
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || localConfig.messagingSenderId,
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || localConfig.appId,
-  firestoreDatabaseId: process.env.NEXT_PUBLIC_FIREBASE_FIRESTORE_DATABASE_ID || localConfig.firestoreDatabaseId,
+  firestoreDatabaseId: databaseId,
 };
 
 // Check if we are in a browser environment and missing keys
@@ -62,8 +74,9 @@ export const activeConfig = {
   projectId: firebaseConfig.projectId,
   storageBucket: derivedStorageBucket,
   databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
-  isSwapped: firebaseConfig.projectId === firebaseConfig.firestoreDatabaseId && firebaseConfig.projectId?.includes('ai-studio-'),
-  expectedProjectId: localConfig.projectId
+  isSwapped: isSwappedDetected,
+  expectedProjectId: localConfig.projectId,
+  expectedDatabaseId: localConfig.firestoreDatabaseId
 };
 
 // Helper to check if Firebase is properly configured
