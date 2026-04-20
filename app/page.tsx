@@ -30,7 +30,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { read, utils } from 'xlsx';
 import { InventoryItem, InventoryRequest, InventoryData, CUPBOARDS, CATEGORIES, generateId } from '@/lib/inventory';
-import { auth, db, storage, isFirebaseConfigured, activeConfig } from '@/firebase';
+import { auth, db as defaultDb, storage as defaultStorage, isFirebaseConfigured, activeConfig, app, getStorage, FirebaseStorage, getFirestore, Firestore } from '@/firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -167,6 +167,8 @@ interface ExportFile {
 
 function InventoryPage() {
   const [data, setData] = useState<InventoryData>({ items: [], requests: [], lastAction: 'Initializing...' });
+  const [effectiveStorage, setEffectiveStorage] = useState<FirebaseStorage | null>(defaultStorage);
+  const [effectiveDb, setEffectiveDb] = useState<Firestore | null>(defaultDb);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -233,10 +235,11 @@ function InventoryPage() {
 
   // Firestore Connection Test
   useEffect(() => {
-    if (!isFirebaseConfigured || !db) return;
+    if (!isFirebaseConfigured || !effectiveDb) return;
     async function testConnection() {
+      if (!effectiveDb) return;
       try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
+        await getDocFromServer(doc(effectiveDb, 'test', 'connection'));
       } catch (error) {
         if(error instanceof Error && error.message.includes('the client is offline')) {
           console.error("Please check your Firebase configuration. ");
@@ -249,13 +252,13 @@ function InventoryPage() {
 
   // Firestore Listeners
   useEffect(() => {
-    if (!isAuthReady || !user || !isFirebaseConfigured || !db) return;
+    if (!isAuthReady || !user || !isFirebaseConfigured || !effectiveDb) return;
 
     const inventoryPath = 'inventory';
     const metadataPath = 'metadata';
     const requestsPath = 'requests';
 
-    const unsubscribeInventory = onSnapshot(collection(db, inventoryPath), (snapshot) => {
+    const unsubscribeInventory = onSnapshot(collection(effectiveDb, inventoryPath), (snapshot) => {
       console.log(`Inventory snapshot received: ${snapshot.size} items`);
       const items = snapshot.docs.map(doc => doc.data() as InventoryItem);
       setData(prev => ({ ...prev, items }));
@@ -267,7 +270,7 @@ function InventoryPage() {
       handleFirestoreError(error, OperationType.GET, inventoryPath);
     });
 
-    const unsubscribeMetadata = onSnapshot(doc(db, metadataPath, 'app'), (docSnap) => {
+    const unsubscribeMetadata = onSnapshot(doc(effectiveDb, metadataPath, 'app'), (docSnap) => {
       if (docSnap.exists()) {
         const metadata = docSnap.data();
         setData(prev => ({ ...prev, lastAction: metadata.lastAction || 'No recent actions' }));
@@ -276,7 +279,7 @@ function InventoryPage() {
       handleFirestoreError(error, OperationType.GET, `${metadataPath}/app`);
     });
 
-    const unsubscribeRequests = onSnapshot(collection(db, requestsPath), (snapshot) => {
+    const unsubscribeRequests = onSnapshot(collection(effectiveDb, requestsPath), (snapshot) => {
       const requests = snapshot.docs.map(doc => doc.data() as InventoryRequest);
       setData(prev => ({ ...prev, requests }));
     }, (error) => {
@@ -288,12 +291,12 @@ function InventoryPage() {
       unsubscribeMetadata();
       unsubscribeRequests();
     };
-  }, [isAuthReady, user]);
+  }, [isAuthReady, user, effectiveDb]);
 
   const fetchExports = useCallback(async () => {
-    if (!isFirebaseConfigured || !storage || !isAdmin) return;
+    if (!isFirebaseConfigured || !effectiveStorage || !isAdmin) return;
     try {
-      const exportsRef = ref(storage, 'exports');
+      const exportsRef = ref(effectiveStorage, 'exports');
       const res = await listAll(exportsRef);
       const filePromises = res.items.map(async (item) => {
         const url = await getDownloadURL(item);
@@ -304,13 +307,26 @@ function InventoryPage() {
     } catch (err: any) {
       console.error('Failed to fetch exports:', err);
       if (err?.code === 'storage/retry-limit-exceeded') {
-        const fallbackBucket = activeConfig.projectId ? `${activeConfig.projectId}.appspot.com` : 'unknown';
-        setStatus(`Storage Error: Connection timed out for bucket "${activeConfig.storageBucket}". 
-          Possible fix: Ensure Storage is enabled at https://console.firebase.google.com/project/${activeConfig.projectId}/storage. 
-          If already enabled, try changing your storageBucket to "${fallbackBucket}" in your environment variables.`);
+        const altBucket = activeConfig.storageBucket?.includes('firebasestorage.app') 
+          ? `${activeConfig.projectId}.appspot.com` 
+          : `${activeConfig.projectId}.firebasestorage.app`;
+        
+        // AUTO-FIX: Attempt to switch to the other likely bucket
+        console.warn(`Storage timeout with ${activeConfig.storageBucket}. Trying auto-recovery with ${altBucket}...`);
+        try {
+          const newStorage = getStorage(app, altBucket);
+          setEffectiveStorage(newStorage);
+          activeConfig.storageBucket = altBucket; // Update shared config for display
+        } catch (recoveryErr) {
+          console.error('Auto-recovery bucket switch failed:', recoveryErr);
+        }
+
+        setStatus(`Storage Timeout (Bucket: ${activeConfig.storageBucket}). 
+          1. Enable Storage at https://console.firebase.google.com/project/${activeConfig.projectId}/storage 
+          2. Trying auto-recovery bucket: ${altBucket}`);
       }
     }
-  }, [isAdmin]);
+  }, [isAdmin, effectiveStorage]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -345,21 +361,22 @@ function InventoryPage() {
 
   const updateLastAction = useCallback(async (action: string) => {
     const path = 'metadata/app';
+    if (!effectiveDb) return;
     try {
-      await setDoc(doc(db, 'metadata', 'app'), {
+      await setDoc(doc(effectiveDb, 'metadata', 'app'), {
         lastAction: action,
         updatedAt: new Date().toISOString()
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
-  }, []);
+  }, [effectiveDb]);
 
   const handleAddItem = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newItem.name || newItem.quantity < 1) return;
-    if (!isFirebaseConfigured || !db) {
-      setStatus('Firebase not configured');
+    if (!isFirebaseConfigured || !effectiveDb) {
+      setStatus('Firebase not configured or no database connection');
       return;
     }
 
@@ -373,7 +390,7 @@ function InventoryPage() {
     
     const path = `inventory/${id}`;
     try {
-      await setDoc(doc(db, 'inventory', id), item);
+      await setDoc(doc(effectiveDb, 'inventory', id), item);
       await updateLastAction(`Added item: ${item.name} (${id})`);
       setNewItem({ 
         name: '', 
@@ -400,9 +417,10 @@ function InventoryPage() {
     setConfirmModal({
       message: `Are you sure you want to delete item ${id}?`,
       onConfirm: async () => {
+        if (!effectiveDb) return;
         const path = `inventory/${id}`;
         try {
-          await deleteDoc(doc(db, 'inventory', id));
+          await deleteDoc(doc(effectiveDb, 'inventory', id));
           await updateLastAction(`Deleted item: ${id}`);
           setConfirmModal(null);
         } catch (error) {
@@ -410,7 +428,7 @@ function InventoryPage() {
         }
       }
     });
-  }, [updateLastAction]);
+  }, [updateLastAction, effectiveDb]);
 
   const handleEditStart = useCallback((item: InventoryItem) => {
     setEditingId(item.id);
@@ -428,7 +446,7 @@ function InventoryPage() {
   }, []);
 
   const handleEditSave = useCallback(async () => {
-    if (!editForm || !isFirebaseConfigured || !db) return;
+    if (!editForm || !isFirebaseConfigured || !effectiveDb) return;
     const path = `inventory/${editForm.id}`;
     try {
       const updatedItem = {
@@ -436,22 +454,23 @@ function InventoryPage() {
         updatedAt: new Date().toISOString(),
         updatedBy: user?.uid
       };
-      await setDoc(doc(db, 'inventory', editForm.id), updatedItem);
+      await setDoc(doc(effectiveDb, 'inventory', editForm.id), updatedItem);
       await updateLastAction(`Updated item: ${editForm.name} (${editForm.id})`);
       setEditingId(null);
       setEditForm(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
     }
-  }, [editForm, user, updateLastAction]);
+  }, [editForm, user, updateLastAction, effectiveDb]);
 
   const handleClearAll = useCallback(() => {
     setConfirmModal({
       message: 'CRITICAL: Are you sure you want to clear ALL inventory? This cannot be undone.',
       onConfirm: async () => {
-        const batch = writeBatch(db);
+        if (!effectiveDb) return;
+        const batch = writeBatch(effectiveDb);
         data.items.forEach(item => {
-          batch.delete(doc(db, 'inventory', item.id));
+          batch.delete(doc(effectiveDb, 'inventory', item.id));
         });
         try {
           await batch.commit();
@@ -462,10 +481,10 @@ function InventoryPage() {
         }
       }
     });
-  }, [data.items, updateLastAction]);
+  }, [data.items, updateLastAction, effectiveDb]);
 
   const exportToCSV = useCallback(async () => {
-    if (!isFirebaseConfigured || !storage) {
+    if (!isFirebaseConfigured || !effectiveStorage) {
       setStatus('Firebase not configured');
       return;
     }
@@ -503,7 +522,7 @@ function InventoryPage() {
 
     // Save to Firebase Storage
     try {
-      const storageRef = ref(storage, `exports/${fileName}`);
+      const storageRef = ref(effectiveStorage!, `exports/${fileName}`);
       await uploadString(storageRef, csvContent, 'raw', {
         contentType: 'text/csv'
       });
@@ -514,15 +533,18 @@ function InventoryPage() {
     } catch (error: any) {
       console.error('Storage export failed:', error);
       if (error?.code === 'storage/retry-limit-exceeded') {
-        const fallbackBucket = activeConfig.projectId ? `${activeConfig.projectId}.appspot.com` : 'unknown';
-        setStatus(`Export failed: Storage connection timed out for bucket "${activeConfig.storageBucket}". 
-          Possible fix: Ensure Storage is enabled at https://console.firebase.google.com/project/${activeConfig.projectId}/storage. 
-          If already enabled, try changing your storageBucket to "${fallbackBucket}" in your environment variables.`);
+        const altBucket = activeConfig.storageBucket?.includes('firebasestorage.app') 
+          ? `${activeConfig.projectId}.appspot.com` 
+          : `${activeConfig.projectId}.firebasestorage.app`;
+
+        setStatus(`Export Timeout (Bucket: ${activeConfig.storageBucket}). 
+          1. Enable Storage at https://console.firebase.google.com/project/${activeConfig.projectId}/storage 
+          2. Trying auto-recovery bucket: ${altBucket}`);
       } else {
         setStatus('Export failed');
       }
     }
-  }, [data.items, fetchExports, updateLastAction]);
+  }, [data.items, fetchExports, updateLastAction, effectiveStorage]);
 
   const handleRequest = useCallback(async () => {
     if (!user || !requestModal) return;
@@ -551,7 +573,7 @@ function InventoryPage() {
     };
 
     try {
-      await setDoc(doc(db, 'requests', requestId), newRequest);
+      await setDoc(doc(effectiveDb!, 'requests', requestId), newRequest);
       await updateLastAction(`Request to ${type} ${quantity}x ${itemName} submitted`);
       setStatus(`Request submitted successfully`);
       setRequestModal(null);
@@ -561,15 +583,16 @@ function InventoryPage() {
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `requests/${requestId}`);
     }
-  }, [user, requestModal, requestQuantity, requestNote, requestItemName, updateLastAction]);
+  }, [user, requestModal, requestQuantity, requestNote, requestItemName, updateLastAction, effectiveDb]);
 
   const handleApproveRequest = useCallback(async (request: InventoryRequest) => {
-    if (!isAdmin) return;
+    if (!isAdmin || !effectiveDb) return;
+    const currentDb = effectiveDb;
 
     try {
       if (request.type === 'request') {
         // Just approve the request for a new item
-        await updateDoc(doc(db, 'requests', request.id), {
+        await updateDoc(doc(currentDb, 'requests', request.id), {
           status: 'approved',
           updatedAt: new Date().toISOString()
         });
@@ -583,7 +606,7 @@ function InventoryPage() {
         return;
       }
 
-      const itemRef = doc(db, 'inventory', request.itemId);
+      const itemRef = doc(currentDb, 'inventory', request.itemId);
       const itemSnap = await getDoc(itemRef);
       
       if (!itemSnap.exists()) {
@@ -612,7 +635,7 @@ function InventoryPage() {
       });
 
       // Update request status
-      await updateDoc(doc(db, 'requests', request.id), {
+      await updateDoc(doc(currentDb, 'requests', request.id), {
         status: 'approved',
         updatedAt: new Date().toISOString()
       });
@@ -622,7 +645,7 @@ function InventoryPage() {
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `requests/${request.id}`);
     }
-  }, [isAdmin, user, updateLastAction]);
+  }, [isAdmin, user, updateLastAction, effectiveDb]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -687,7 +710,7 @@ function InventoryPage() {
               working: String(row.Working || row.working || row.STATUS || row.status || 'yes').trim(),
               eles: String(row.Eles || row.eles || '').trim(),
               updatedAt: new Date().toISOString(),
-              updatedBy: user?.uid || 'unknown' // Ensure never undefined
+              updatedBy: user?.uid
             };
           });
 
@@ -716,9 +739,9 @@ function InventoryPage() {
   }, [user]);
 
   const handleRemoveExport = useCallback(async (fileName: string) => {
-    if (!isFirebaseConfigured || !storage || !isAdmin) return;
+    if (!isFirebaseConfigured || !effectiveStorage || !isAdmin) return;
     try {
-      const storageRef = ref(storage, `exports/${fileName}`);
+      const storageRef = ref(effectiveStorage, `exports/${fileName}`);
       await deleteObject(storageRef);
       setStatus(`Export deleted: ${fileName}`);
       fetchExports();
@@ -726,67 +749,66 @@ function InventoryPage() {
       console.error('Failed to delete export:', error);
       setStatus('Delete failed');
     }
-  }, [isAdmin, fetchExports]);
+  }, [isAdmin, fetchExports, effectiveStorage]);
 
   const handleConfirmImport = useCallback(async () => {
-    if (!importPreview || !isAdmin || !isFirebaseConfigured || !db) return;
+    if (!importPreview || !isAdmin || !isFirebaseConfigured || !effectiveDb) return;
     setIsImporting(true);
     const totalItems = importPreview.length;
-    setStatus(`Importing ${totalItems} items...`);
+    setStatus(`Preparing ${totalItems} items for upload...`);
 
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Import timed out after 45 seconds")), 45000)
+      setTimeout(() => reject(new Error("Import timed out after 60 seconds. Possible Database ID mismatch.")), 60000)
     );
 
     try {
-      // Firestore batch limit is 500 operations
-      const BATCH_SIZE = 500;
+      const BATCH_SIZE = 50; 
       const chunks = [];
       for (let i = 0; i < importPreview.length; i += BATCH_SIZE) {
         chunks.push(importPreview.slice(i, i + BATCH_SIZE));
       }
 
+      console.log(`Starting batched import: ${chunks.length} batches for ${totalItems} items`);
       let processed = 0;
-      for (const chunk of chunks) {
-        const batch = writeBatch(db);
+      
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        setStatus(`Importing batch ${i + 1}/${chunks.length}...`);
+        
+        const currentDb = effectiveDb!;
+        const batch = writeBatch(currentDb);
         chunk.forEach(item => {
-          const itemRef = doc(db, 'inventory', item.id);
-          // Ensure no undefined values which crash Firestore SDK
-          const sanitizedItem = JSON.parse(JSON.stringify(item));
-          batch.set(itemRef, sanitizedItem);
+          const itemRef = doc(currentDb, 'inventory', item.id);
+          const cleanedItem = { ...item };
+          Object.keys(cleanedItem).forEach(key => {
+            if ((cleanedItem as any)[key] === undefined) delete (cleanedItem as any)[key];
+          });
+          batch.set(itemRef, cleanedItem, { merge: true });
         });
 
-        // Use Promise.race to prevent hanging indefinitely
         await Promise.race([batch.commit(), timeoutPromise]);
         
         processed += chunk.length;
         const progress = Math.round((processed / totalItems) * 100);
         setStatus(`Import progress: ${progress}%...`);
-        console.log(`Imported batch of ${chunk.length} items. Total: ${processed}/${totalItems}`);
       }
 
       await updateLastAction(`Imported ${totalItems} items from Excel`);
       setStatus(`Successfully imported ${totalItems} items`);
       setImportPreview(null);
     } catch (error: any) {
-      console.error('Import failed:', error);
-      const errorMsg = error?.message || 'Unknown import error';
-      setStatus(`Import failed: ${errorMsg}`);
-      
-      // Specifically handle permission or connection errors
-      if (errorMsg.includes('permission') || errorMsg.includes('auth')) {
-        setStatus('Import failed: Permission denied. Please check if your email is authorized.');
-      }
+      console.error('Import process failed:', error);
+      setStatus(`Import failed: ${error?.message || 'Unknown error'}`);
     } finally {
       setIsImporting(false);
     }
-  }, [importPreview, isAdmin, updateLastAction, db]);
+  }, [importPreview, isAdmin, updateLastAction, effectiveDb]);
 
   const handleRejectRequest = useCallback(async (request: InventoryRequest) => {
-    if (!isAdmin) return;
+    if (!isAdmin || !effectiveDb) return;
 
     try {
-      await updateDoc(doc(db, 'requests', request.id), {
+      await updateDoc(doc(effectiveDb, 'requests', request.id), {
         status: 'rejected',
         updatedAt: new Date().toISOString()
       });
@@ -796,7 +818,7 @@ function InventoryPage() {
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `requests/${request.id}`);
     }
-  }, [isAdmin, updateLastAction]);
+  }, [isAdmin, updateLastAction, effectiveDb]);
 
   const filteredItems = useMemo(() => {
     const items = data.items.filter(item => {
@@ -1503,13 +1525,38 @@ function InventoryPage() {
                     </tr>
                   ) : sortedItems.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-20 text-center">
-                        <div className="flex flex-col items-center justify-center">
-                          <div className="w-12 h-12 bg-gray-50 text-gray-300 rounded-full flex items-center justify-center mb-4">
+                      <td colSpan={6} className="py-16 text-center">
+                        <div className="flex flex-col items-center justify-center max-w-lg mx-auto bg-gray-50/50 rounded-2xl p-8 border border-gray-100">
+                          <div className="w-12 h-12 bg-white shadow-sm text-gray-300 rounded-full flex items-center justify-center mb-4">
                             <Box className="w-6 h-6" />
                           </div>
-                          <p className="text-sm font-medium text-gray-500">No items found</p>
-                          <p className="text-[10px] text-gray-400 mt-1">Try adjusting your search or category filter</p>
+                          <p className="text-sm font-bold text-gray-900 mb-1">No items found in database</p>
+                          <p className="text-xs text-gray-500 mb-6 leading-relaxed">
+                            We are currently connected to database: <span className="font-mono text-blue-600 bg-blue-50 px-1 rounded">{activeConfig.databaseId}</span>.
+                            If you don&apos;t see your data, your <span className="font-bold">Database ID</span> might be incorrect.
+                          </p>
+                          
+                          <div className="w-full space-y-3 bg-white p-5 rounded-xl border border-gray-100 text-left">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                              <AlertCircle className="w-3 h-3" /> Troubleshooting Dashboard
+                            </p>
+                            <div className="space-y-4">
+                              <div className="flex gap-3">
+                                <div className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-[10px] font-black flex-shrink-0">1</div>
+                                <div>
+                                  <p className="text-[10px] font-bold text-gray-700 uppercase">Check Database ID</p>
+                                  <p className="text-[10px] text-gray-500 leading-tight">Your data might be in one of the long IDs seen in your Firebase Console (e.g. ai-studio-8aad...). Update <code className="bg-gray-50 p-0.5 rounded text-blue-600">NEXT_PUBLIC_FIREBASE_FIRESTORE_DATABASE_ID</code> in Vercel.</p>
+                                </div>
+                              </div>
+                              <div className="flex gap-3">
+                                <div className="w-6 h-6 rounded-lg bg-green-50 text-green-600 flex items-center justify-center text-[10px] font-black flex-shrink-0">2</div>
+                                <div>
+                                  <p className="text-[10px] font-bold text-gray-700 uppercase">Authorized Domains</p>
+                                  <p className="text-[10px] text-gray-500 leading-tight">Ensure your Vercel URL is added to your Firebase Auth settings &gt; Authorized Domains.</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </td>
                     </tr>

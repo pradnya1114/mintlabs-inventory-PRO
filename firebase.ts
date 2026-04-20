@@ -1,7 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
+import { getFirestore, Firestore } from 'firebase/firestore';
+import { getStorage, FirebaseStorage } from 'firebase/storage';
 
 // Import the local config file as a fallback for AI Studio
 let localConfig: any = {};
@@ -29,7 +29,11 @@ if (typeof window !== 'undefined' && !firebaseConfig.apiKey) {
 }
 
 // Initialize Firebase SDK safely
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+
+// Determine the most likely storage bucket name if missing
+const derivedStorageBucket = firebaseConfig.storageBucket || 
+  (firebaseConfig.projectId ? `${firebaseConfig.projectId}.firebasestorage.app` : '');
 
 // Export services with a check to prevent crashing during build/prerendering
 export const db = firebaseConfig.apiKey 
@@ -48,15 +52,19 @@ if (auth) {
   });
 }
 
+// Storage can be initialized with a specific bucket if the main config is missing it
 export const storage = firebaseConfig.apiKey
-  ? getStorage(app)
+  ? getStorage(app, derivedStorageBucket || undefined)
   : null as any;
 
 export const activeConfig = {
   projectId: firebaseConfig.projectId,
-  storageBucket: firebaseConfig.storageBucket,
+  storageBucket: derivedStorageBucket,
   databaseId: firebaseConfig.firestoreDatabaseId || '(default)'
 };
 
 // Helper to check if Firebase is properly configured
 export const isFirebaseConfigured = !!firebaseConfig.apiKey;
+
+export { getStorage, getFirestore };
+export type { FirebaseStorage, Firestore };
