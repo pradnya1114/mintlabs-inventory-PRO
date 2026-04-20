@@ -57,10 +57,13 @@ export const storage = firebaseConfig.apiKey
   ? getStorage(app, derivedStorageBucket || undefined)
   : null as any;
 
+// Create a copy of the config for UI display and diagnostics
 export const activeConfig = {
   projectId: firebaseConfig.projectId,
   storageBucket: derivedStorageBucket,
-  databaseId: firebaseConfig.firestoreDatabaseId || '(default)'
+  databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+  isSwapped: firebaseConfig.projectId === firebaseConfig.firestoreDatabaseId && firebaseConfig.projectId?.includes('ai-studio-'),
+  expectedProjectId: localConfig.projectId
 };
 
 // Helper to check if Firebase is properly configured

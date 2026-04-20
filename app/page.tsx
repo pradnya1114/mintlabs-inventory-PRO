@@ -173,6 +173,8 @@ function InventoryPage() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isDataLoading, setIsDataLoading] = useState(true);
+  const [loadStartTime] = useState(Date.now());
+  const [showConfigWarning, setShowConfigWarning] = useState(false);
   const [status, setStatus] = useState('System Ready');
   const [exports, setExports] = useState<ExportFile[]>([]);
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
@@ -211,6 +213,18 @@ function InventoryPage() {
   const [editForm, setEditForm] = useState<InventoryItem | null>(null);
   const [importPreview, setImportPreview] = useState<InventoryItem[] | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+
+  // Connection Timeout Monitor
+  useEffect(() => {
+    if (!isDataLoading) return;
+    const timer = setTimeout(() => {
+      if (isDataLoading) {
+        setShowConfigWarning(true);
+        setStatus('Connect timeout - checking config...');
+      }
+    }, 8000); // 8 seconds before warning
+    return () => clearTimeout(timer);
+  }, [isDataLoading]);
 
   // Auth Listener
   useEffect(() => {
@@ -771,27 +785,43 @@ function InventoryPage() {
       console.log(`Starting batched import: ${chunks.length} batches for ${totalItems} items`);
       let processed = 0;
       
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        setStatus(`Importing batch ${i + 1}/${chunks.length}...`);
-        
-        const currentDb = effectiveDb!;
-        const batch = writeBatch(currentDb);
-        chunk.forEach(item => {
-          const itemRef = doc(currentDb, 'inventory', item.id);
-          const cleanedItem = { ...item };
-          Object.keys(cleanedItem).forEach(key => {
-            if ((cleanedItem as any)[key] === undefined) delete (cleanedItem as any)[key];
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const batchNum = i + 1;
+          const totalBatches = chunks.length;
+          
+          setStatus(`Writing batch ${batchNum}/${totalBatches}...`);
+          
+          const currentDb = effectiveDb!;
+          const batch = writeBatch(currentDb);
+          
+          // Use current user ID for the batch to ensure it's up to date
+          const currentUid = auth.currentUser?.uid || user?.uid || 'unknown';
+          
+          chunk.forEach(item => {
+            const itemRef = doc(currentDb, 'inventory', item.id);
+            const cleanedItem = { 
+              ...item,
+              updatedBy: currentUid, // Force current UID at write time
+              updatedAt: new Date().toISOString()
+            };
+            
+            Object.keys(cleanedItem).forEach(key => {
+              if ((cleanedItem as any)[key] === undefined) delete (cleanedItem as any)[key];
+            });
+            batch.set(itemRef, cleanedItem, { merge: true });
           });
-          batch.set(itemRef, cleanedItem, { merge: true });
-        });
 
-        await Promise.race([batch.commit(), timeoutPromise]);
-        
-        processed += chunk.length;
-        const progress = Math.round((processed / totalItems) * 100);
-        setStatus(`Import progress: ${progress}%...`);
-      }
+          console.log(`Committing batch ${batchNum}/${totalBatches}...`);
+          await Promise.race([
+            batch.commit(), 
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`Batch ${batchNum} timed out`)), 25000))
+          ]);
+          
+          processed += chunk.length;
+          const progress = Math.round((processed / totalItems) * 100);
+          setStatus(`Import progress: ${progress}% (Done ${processed}/${totalItems})`);
+        }
 
       await updateLastAction(`Imported ${totalItems} items from Excel`);
       setStatus(`Successfully imported ${totalItems} items`);
@@ -876,6 +906,15 @@ function InventoryPage() {
     }, {} as Record<string, number>);
     return { totalItems, totalQuantity, perCupboard, perCategory };
   }, [data.items]);
+
+  const isSwapped = useMemo(() => {
+    if (!activeConfig.projectId || !activeConfig.databaseId) return false;
+    const p = activeConfig.projectId.toLowerCase().trim();
+    const d = activeConfig.databaseId.toLowerCase().trim();
+    // Swapped if Project ID contains "ai-studio" (which is usually for databases) 
+    // or if they are identical
+    return p === d || p.includes('ai-studio-');
+  }, []);
 
   if (!isAuthReady) {
     return (
@@ -1028,6 +1067,31 @@ function InventoryPage() {
           </button>
         </div>
       </header>
+      
+      {/* Critical Configuration Warning Banner */}
+      {(isSwapped || showConfigWarning) && (
+        <div className="bg-red-600 text-white p-3 px-8 flex items-center justify-between shadow-lg z-50">
+          <div className="flex items-center gap-4">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 animate-bounce" />
+            <div className="text-xs font-bold uppercase tracking-wider">
+              {isSwapped ? (
+                <span>
+                  CRITICAL: Possible Swapped IDs. PROJECT ID should be &quot;{activeConfig.expectedProjectId}&quot; but is &quot;{activeConfig.projectId}&quot;. 
+                  Check Vercel env vars.
+                </span>
+              ) : (
+                <span>WAITING FOR DATABASE CONNECT: This can happen if the DATABASE ID is incorrect in Vercel.</span>
+              )}
+            </div>
+          </div>
+          <button 
+            onClick={() => setShowConfigWarning(false)}
+            className="text-[10px] font-black uppercase tracking-widest bg-white/20 px-2 py-1 rounded hover:bg-white/30 transition-colors"
+          >
+            Dimiss
+          </button>
+        </div>
+      )}
 
       {/* Category Navigation Bar */}
       <nav className="bg-white border-b border-gray-100 overflow-x-auto whitespace-nowrap sticky top-[73px] z-20 no-scrollbar px-8">
