@@ -699,7 +699,7 @@ function InventoryPage() {
             // We use a combination of name, serial, and model to create a unique but stable identifier
             const contentHash = `${name}-${serialNumber}-${modelNumber}`.toLowerCase().replace(/[^a-z0-9]/g, '');
             // IMPORTANT: Sanitize ID to remove forbidden Firestore characters like "/"
-            let id = (row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `AUTO-${contentHash}`)
+            let id = (row.Code || row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `AUTO-${contentHash}`)
               .toString()
               .trim()
               .replace(/\//g, '_') // Replace forward slash with underscore
@@ -1438,37 +1438,47 @@ function InventoryPage() {
                       <th className="text-left p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">User</th>
                       <th className="text-left p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Item</th>
                       <th className="text-center p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Type</th>
-                      <th className="text-center p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Qty</th>
+                      <th className="text-center p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Req Qty</th>
+                      <th className="text-center p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Available</th>
                       <th className="text-center p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Status</th>
                       {isAdmin && <th className="text-center p-5 text-[10px] uppercase font-bold text-gray-400 tracking-widest">Actions</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {data.requests.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((req) => (
-                      <tr key={req.id} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="p-5">
-                          <div className="flex flex-col">
-                            <span className="text-xs font-bold text-gray-900">{req.userName}</span>
-                            <span className="text-[10px] text-gray-400">{req.userEmail}</span>
-                          </div>
-                        </td>
-                        <td className="p-5">
-                          <div className="flex flex-col">
-                            <span className="text-xs font-bold text-gray-900">{req.itemName}</span>
-                            <span className="text-[10px] text-gray-400 font-mono">{req.itemId}</span>
-                          </div>
-                        </td>
-                        <td className="p-5 text-center">
-                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
-                            req.type === 'take' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
-                          }`}>
-                            {req.type}
-                          </span>
-                        </td>
-                        <td className="p-5 text-center text-xs font-bold text-gray-900">
-                          {req.quantity}
-                        </td>
-                        <td className="p-5 text-center">
+                    {data.requests.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((req) => {
+                      const itemInStock = data.items.find(i => i.id === req.itemId);
+                      return (
+                        <tr key={req.id} className="hover:bg-gray-50/50 transition-colors">
+                          <td className="p-5">
+                            <div className="flex flex-col">
+                              <span className="text-xs font-bold text-gray-900">{req.userName}</span>
+                              <span className="text-[10px] text-gray-400">{req.userEmail}</span>
+                            </div>
+                          </td>
+                          <td className="p-5">
+                            <div className="flex flex-col">
+                              <span className="text-xs font-bold text-gray-900">{req.itemName}</span>
+                              <span className="text-[10px] text-gray-400 font-mono">{req.itemId}</span>
+                            </div>
+                          </td>
+                          <td className="p-5 text-center">
+                            <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
+                              req.type === 'take' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
+                            }`}>
+                              {req.type}
+                            </span>
+                          </td>
+                          <td className="p-5 text-center text-xs font-bold text-gray-900">
+                            {req.quantity}
+                          </td>
+                          <td className="p-5 text-center">
+                            <span className={`inline-flex items-center justify-center min-w-[32px] h-6 px-2 rounded-full text-[10px] font-bold ${
+                              !itemInStock || itemInStock.quantity === 0 ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+                            }`}>
+                              {itemInStock?.quantity ?? 0} In Stock
+                            </span>
+                          </td>
+                          <td className="p-5 text-center">
                           <div className="flex flex-col items-center gap-1">
                             <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase flex items-center gap-1 ${
                               req.status === 'pending' ? 'bg-yellow-50 text-yellow-600' :
@@ -1507,7 +1517,8 @@ function InventoryPage() {
                           </td>
                         )}
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
                 {data.requests.length === 0 && (
