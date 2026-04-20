@@ -661,8 +661,15 @@ function InventoryPage() {
             // Generate a stable ID if none provided to prevent duplicates across sheets
             // We use a combination of name, serial, and model to create a unique but stable identifier
             const contentHash = `${name}-${serialNumber}-${modelNumber}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const id = (row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `AUTO-${contentHash}`).toString().trim();
+            // IMPORTANT: Sanitize ID to remove forbidden Firestore characters like "/"
+            let id = (row.Inventory || row.id || row.ID || row['Asset ID'] || row.AssetID || `AUTO-${contentHash}`)
+              .toString()
+              .trim()
+              .replace(/\//g, '_') // Replace forward slash with underscore
+              .replace(/\s+/g, '-'); // Replace spaces with dashes
             
+            if (!id) id = `AUTO-${Date.now()}-${index}`;
+
             return {
               id,
               name,
@@ -677,10 +684,10 @@ function InventoryPage() {
               sim: String(row.Sim || row.sim || row.SIM || '').trim(),
               box: String(row.Box || row.box || row.BOX || '').trim(),
               remark: String(row.Remark || row.remark || row.REMARK || row.Remarks || row.remarks || '').trim(),
-              working: String(row.Working || row.working || row.STATUS || row.status || '').trim(),
+              working: String(row.Working || row.working || row.STATUS || row.status || 'yes').trim(),
               eles: String(row.Eles || row.eles || '').trim(),
               updatedAt: new Date().toISOString(),
-              updatedBy: user?.uid
+              updatedBy: user?.uid || 'unknown' // Ensure never undefined
             };
           });
 
@@ -727,6 +734,10 @@ function InventoryPage() {
     const totalItems = importPreview.length;
     setStatus(`Importing ${totalItems} items...`);
 
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Import timed out after 45 seconds")), 45000)
+    );
+
     try {
       // Firestore batch limit is 500 operations
       const BATCH_SIZE = 500;
@@ -740,23 +751,36 @@ function InventoryPage() {
         const batch = writeBatch(db);
         chunk.forEach(item => {
           const itemRef = doc(db, 'inventory', item.id);
-          batch.set(itemRef, item);
+          // Ensure no undefined values which crash Firestore SDK
+          const sanitizedItem = JSON.parse(JSON.stringify(item));
+          batch.set(itemRef, sanitizedItem);
         });
-        await batch.commit();
+
+        // Use Promise.race to prevent hanging indefinitely
+        await Promise.race([batch.commit(), timeoutPromise]);
+        
         processed += chunk.length;
-        setStatus(`Importing... ${Math.round((processed / totalItems) * 100)}%`);
+        const progress = Math.round((processed / totalItems) * 100);
+        setStatus(`Import progress: ${progress}%...`);
+        console.log(`Imported batch of ${chunk.length} items. Total: ${processed}/${totalItems}`);
       }
 
       await updateLastAction(`Imported ${totalItems} items from Excel`);
       setStatus(`Successfully imported ${totalItems} items`);
       setImportPreview(null);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'inventory/batch');
-      setStatus('Import failed');
+    } catch (error: any) {
+      console.error('Import failed:', error);
+      const errorMsg = error?.message || 'Unknown import error';
+      setStatus(`Import failed: ${errorMsg}`);
+      
+      // Specifically handle permission or connection errors
+      if (errorMsg.includes('permission') || errorMsg.includes('auth')) {
+        setStatus('Import failed: Permission denied. Please check if your email is authorized.');
+      }
     } finally {
       setIsImporting(false);
     }
-  }, [importPreview, isAdmin, updateLastAction]);
+  }, [importPreview, isAdmin, updateLastAction, db]);
 
   const handleRejectRequest = useCallback(async (request: InventoryRequest) => {
     if (!isAdmin) return;
@@ -1935,11 +1959,18 @@ function InventoryPage() {
 
               <div className="flex gap-3">
                 <button 
-                  onClick={() => setImportPreview(null)}
-                  disabled={isImporting}
+                  onClick={() => {
+                    if (isImporting) {
+                      if (confirm("Import is still in progress. Closing this window will NOT stop the server process but will hide the progress. Are you sure?")) {
+                        setImportPreview(null);
+                      }
+                    } else {
+                      setImportPreview(null);
+                    }
+                  }}
                   className="flex-1 px-4 py-3 bg-gray-50 text-gray-600 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-gray-100 transition-all disabled:opacity-50"
                 >
-                  Cancel
+                  {isImporting ? 'Close Process' : 'Cancel'}
                 </button>
                 <button 
                   onClick={handleConfirmImport}
@@ -1949,7 +1980,7 @@ function InventoryPage() {
                   {isImporting ? (
                     <>
                       <RefreshCcw className="w-4 h-4 animate-spin" />
-                      Importing...
+                      {status.includes('%') ? status.split(': ')[1] : 'Importing...'}
                     </>
                   ) : (
                     <>
