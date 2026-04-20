@@ -19,11 +19,24 @@ const rawDatabaseId = (process.env.NEXT_PUBLIC_FIREBASE_FIRESTORE_DATABASE_ID ||
 // INTELLIGENT AUTO-RECOVERY: Detect if user swapped Project ID and Database ID
 // Real project IDs: "led10-2e780"
 // Database IDs: "ai-studio-8aadbe5a-8a6c-..."
-const isSwappedDetected = !!(rawProjectId && rawProjectId.startsWith('ai-studio-') && rawDatabaseId && !rawDatabaseId.startsWith('ai-studio-'));
+// If Project ID is the long string, it is definitely a mistake.
+const isProjectIdMistake = rawProjectId.startsWith('ai-studio-');
+const isDatabaseIdMistake = rawDatabaseId.length > 0 && !rawDatabaseId.startsWith('ai-studio-');
 
-const projectId = isSwappedDetected ? (rawDatabaseId || localConfig.projectId) : rawProjectId;
-const databaseId = isSwappedDetected ? rawProjectId : rawDatabaseId;
-const authDomain = isSwappedDetected ? `${projectId}.firebaseapp.com` : (process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || localConfig.authDomain);
+// We swap ONLY if it looks clearly like a swap, otherwise we favor the raw values
+// but we ALWAYS ensure projectId is the short name if we have a fallback
+const isSwappedDetected = isProjectIdMistake && (isDatabaseIdMistake || !!localConfig.projectId);
+
+let projectId = rawProjectId;
+let databaseId = rawDatabaseId;
+
+if (isProjectIdMistake && localConfig.projectId) {
+  projectId = localConfig.projectId; // Force short ID for auth
+  databaseId = rawProjectId; // The long ID belongs in databaseId
+}
+
+// Ensure authDomain is ALWAYS derived from the true projectId to fix Login
+const authDomain = `${projectId}.firebaseapp.com`;
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || localConfig.apiKey,
